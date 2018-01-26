@@ -1,5 +1,8 @@
 # Logging HTTP Proxy
 
+*** Derrived from @willthames's project, this handles some error conditions,
+*** multithreads, and logs to a file (proxy.log).
+
 Proxy that logs full HTTP request and response. Obviously things
 like Fiddler etc exist and are very good, but this is really for
 seeing what's going wrong when making API calls from a client.

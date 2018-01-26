@@ -1,8 +1,12 @@
-import BaseHTTPServer
+import sys
 import gzip
+import logging
 import requests
 import StringIO
+import traceback
+import BaseHTTPServer
 
+LOG = None
 
 def rewrite_headers(headers):
     # Don't accept stuff that original request didn't accept
@@ -12,6 +16,8 @@ def rewrite_headers(headers):
     for k, v in headers.items():
         newk = '-'.join(map(lambda x: x.capitalize(), k.split('-')))
         result[newk] = v
+    if 'Content-Encoding' in result and result['Content-Encoding'].lower() == 'gzip':
+        del result['Content-Encoding']
     return result
 
 class LoggingProxyHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
@@ -19,7 +25,6 @@ class LoggingProxyHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
     # send_response pretty similar to BaseHTTPServer send_response
     # but without Server or Date headers
     def send_response(self, code, message=None):
-        self.log_request(code)
         if message is None:
             if code in self.responses:
                 message = self.responses[code][0]
@@ -42,8 +47,9 @@ class LoggingProxyHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         output = response.content
         # handle gzip
         # http://stackoverflow.com/questions/8506897/how-do-i-gzip-compress-a-string-in-python
-        if 'content-encoding' in response.headers and \
+        if False and 'content-encoding' in response.headers and \
                 response.headers['content-encoding'].lower() == 'gzip':
+            print 'gziped response'
             buffer = StringIO.StringIO()
             with gzip.GzipFile(fileobj=buffer, mode="w") as f:
                 f.write(output)
@@ -63,44 +69,79 @@ class LoggingProxyHTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
         self.log_response(response)
 
     def do_GET(self):
+        print 'Got GET: ', self.path
         headers = rewrite_headers(self.headers)
-        response = requests.get(self.path, headers=headers)
-        self.respond(response)
+        self.log_request()
+        try:
+            response = requests.get(self.path, headers=headers, timeout=15.0)
+            self.respond(response)
+        except:
+            self.log_exception()
+        self.log_flush()
 
     def do_POST(self):
+        print 'Got POST: ', self.path
         headers = rewrite_headers(self.headers)
         self.data = self.rfile.read(int(self.headers['Content-Length']))
-        response = requests.post(self.path, headers=headers, data=self.data)
-        self.respond(response)
+        self.log_request()
+        try:
+            response = requests.post(self.path, headers=headers, data=self.data, timeout=15.0)
+            self.respond(response)
+        except:
+            self.log_exception()
+        self.log_flush()
 
     def do_PUT(self):
         headers = rewrite_headers(self.headers)
         self.data = self.rfile.read(int(self.headers['Content-Length']))
-        response = requests.put(self.path, headers=headers, data=self.data)
-        self.respond(response)
+        self.log_request()
+        try:
+            response = requests.put(self.path, headers=headers, data=self.data, timeout=15.0)
+            self.respond(response)
+        except:
+            self.log_exception()
+        self.log_flush()
 
-    def log_error(format, *args):
+    def log_exception(self):
+        logstr = self._logstr if hasattr(self, '_logstr') else ''
+        logstr += traceback.format_exc() + '\n'
+        self._logstr = logstr
+
+    def log_error(self, format, *args):
         pass
 
     def log_request(self, *args):
-        print "*** REQUEST ***"
-        print self.command + ' ' + self.path
+        logstr = self._logstr if hasattr(self, '_logstr') else ''
+
+        logstr += "*** REQUEST ***\n"
+        logstr += self.command + ' ' + self.path + '\n'
         for (k, v) in rewrite_headers(self.headers).items():
-            print "{0} = {1}".format(k, v)
-        print
+            logstr += "{0} = {1}\n".format(k, v)
+        logstr += '\n'
         if self.command in ['POST', 'PUT']:
-            print self.data
-        print "*** END REQUEST ***"
+            logstr += self.data + '\n'
+        logstr += "*** END REQUEST ***\n"
+
+        self._logstr = logstr
 
     def log_response(self, response):
-        print "*** RESPONSE ***"
+        logstr = self._logstr if hasattr(self, '_logstr') else ''
+
+        logstr += "*** RESPONSE ***\n"
         if response.status_code in self.responses:
             shortmessage, longmessage = self.responses[response.status_code]
         else:
             shortmessage = longmessage = "Not a code known by requests module!"
-        print "{0} {1}".format(response.status_code, shortmessage)
+        logstr += "{0} {1}\n".format(response.status_code, shortmessage)
         for (k, v) in rewrite_headers(response.headers).items():
-            print "{0} = {1}".format(k, v)
-        print
-        print response.content
-        print "*** END RESPONSE ***"
+            logstr += "{0} = {1}\n".format(k, v)
+        logstr += '\n'
+        logstr += response.content + '\n'
+        logstr += "*** END RESPONSE ***\n"
+
+        self._logstr = logstr
+
+    def log_flush(self):
+        logger = logging.getLogger('http proxy')
+        if hasattr(self, '_logstr') and self._logstr is not None:
+            logger.info(self._logstr)
